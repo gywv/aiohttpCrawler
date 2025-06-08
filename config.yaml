@@ -1,0 +1,22 @@
+start_urls:
+  - "https://blog.bling.moe/"
+
+priority_rules:
+  - pattern: ".*post.*"
+    priority: 10
+  # - pattern: ".*page.*"
+  #   priority: 5
+
+data_extraction:
+  title: "css:title"
+  published_date: "css:time.post-date"
+  modified_date: "css:span.post-moddate"
+  author: "css:span.post-author"
+
+allowed_domains:
+  - "blog.bling.moe"
+
+save_dir: "data"
+save_as: "json"
+log_level: "INFO"
+fetch_timeout: 10
