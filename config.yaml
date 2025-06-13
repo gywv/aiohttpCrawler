@@ -2,18 +2,21 @@
 start_urls:
   - "https://fuliji666.cc/zyfl/flj/page/30"
 
-# 域名白名单，避免抓取无关页面
+# 并发请求数(协程数)
+concurrent_requests: 50
+
+# 域名白名单：避免抓取无关页面
 allowed_domains:
   - "fuliji666.cc"  
 
-# 优先级规则，优先抓取匹配的URL，避免浪费时间在无关页面
+# 优先级规则：优先抓取匹配的URL，避免浪费时间在无关页面
 priority_rules:
   # - pattern: ".*post.*"
   #   priority: 10
   - pattern: ".*page.*"
     priority: 5
 
-# 数据提取规则，使用CSS选择器或XPath表达式或正则表达式
+# 数据提取规则：CSS选择器或XPath表达式或正则表达式
 data_extraction:
   - imgs: 're:wp-content.*?jpg'
 
@@ -30,7 +33,7 @@ save_dir: "data"
 log_level: "INFO"
 
 # 单次请求超时时间（秒）
-fetch_timeout: 10
+fetch_timeout: 5
 
 # 排除链接模式(链接发现过程中)
 exclude_patterns:

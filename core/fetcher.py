@@ -14,7 +14,7 @@ class AsyncFetcher:
         self.config = load_config()
         self.timeout = self.config.get("timeout", 10)
         self.session: Optional[aiohttp.ClientSession] = None
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(__name__)
         self._setup_logger()
 
     def _setup_logger(self):
