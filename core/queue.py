@@ -50,6 +50,13 @@ class QueueManager:
         self.start_urls  = self.config.get("start_urls", [])
         logger.debug("QueueManager 初始化完成。")
 
+    async def task_done(self):
+        self.queue.task_done()
+        logger.debug("任务完成。")
+
+    async def join(self):
+        await self.queue.join()
+    
     async def async_init(self, initial_urls: list[str] = None):
         if  initial_urls is None:
             initial_urls = self.start_urls
@@ -74,6 +81,9 @@ class QueueManager:
         """
         添加 URL 到队列中，带优先级和去重
         """
+        if url==None:
+            await self.queue.put((-10, None, meta or {}))
+            return
         if self.seen.is_seen(url):
             logger.debug(f"已跳过重复 URL: {url}")
             return

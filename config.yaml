@@ -1,13 +1,24 @@
 # 开始URL列表
 start_urls:
-  - "https://fuliji666.cc/zyfl/flj/page/30"
+  - "https://example.com/"
 
 # 并发请求数(协程数)
-concurrent_requests: 50
+concurrent_requests: 10
+
+
+# 链接排除规则(链接发现过程中)
+exclude_patterns:
+  - '.*\.(xml|json|txt|md|csv)$'
+  - '.*\.(jpe?g|png|gif|bmp|svg|ico|webp)$'
+  - '.*\.(pdf|docx?|xlsx?|pptx?)$'
+  - '.*\.(zip|rar|7z|tar|gz)$'
+  - '.*\.(mp3|wav|ogg|mp4|avi|mov|mkv)$'
+  - '.*\.(exe|dmg|apk|iso)$'
+
 
 # 域名白名单：避免抓取无关页面
 allowed_domains:
-  - "fuliji666.cc"  
+  - "example.com"  
 
 # 优先级规则：优先抓取匹配的URL，避免浪费时间在无关页面
 priority_rules:
@@ -18,7 +29,7 @@ priority_rules:
 
 # 数据提取规则：CSS选择器或XPath表达式或正则表达式
 data_extraction:
-  - imgs: 're:wp-content.*?jpg'
+  - title: 'css:title'
 
 
 # 追加保存为一个txt文件
@@ -35,12 +46,5 @@ log_level: "INFO"
 # 单次请求超时时间（秒）
 fetch_timeout: 5
 
-# 排除链接模式(链接发现过程中)
-exclude_patterns:
-  - '.*\.(xml|json)$'
-  - '.*\.(jpe?g|png|gif|bmp|svg|ico|webp)$'
-  - '.*\.(pdf|docx?|xlsx?|pptx?)$'
-  - '.*\.(zip|rar|7z|tar|gz)$'
-  - '.*\.(mp3|wav|ogg|mp4|avi|mov|mkv)$'
-  - '.*\.(exe|dmg|apk|iso)$'
+
 

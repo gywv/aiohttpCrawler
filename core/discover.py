@@ -3,6 +3,7 @@ import logging
 from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 from lxml import html as lxml_html
+from utils.config import load_config
 
 # 初始化 logger
 logger = logging.getLogger(__name__)
@@ -16,8 +17,8 @@ if not logger.handlers:
 
 class LinkDiscover:
     def __init__(self, config: Optional[dict] = None):
-        self.config = config or {}
-        self.selector = self.config.get("link_selector", "a[href]")
+        self.config = load_config()
+        self.selector = "a[href]"
         self.allowed_domains = self.config.get("allowed_domains", [])
         self.exclude_patterns = [re.compile(p) for p in self.config.get("exclude_patterns", [])]
 

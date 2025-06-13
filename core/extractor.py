@@ -103,7 +103,7 @@ class DataExtractor:
         """
         logger.info("开始提取 URL: %s", url)
         tree = self._parse_html(page_html, url)
-        if not tree:
+        if tree is None:
             logger.warning("提取失败：HTML树构建失败")
             return {}
 

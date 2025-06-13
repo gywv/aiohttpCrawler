@@ -1,0 +1,565 @@
+
+
+=== C:\Users\wyg\Desktop\crawler\main.py ===
+
+import asyncio
+from core.queue import QueueManager
+from core.fetcher import AsyncFetcher
+from core.extractor import DataExtractor
+from core.discover import LinkDiscover
+from core.saver import DataSaver
+from utils.config import load_config
+
+config = load_config()
+CONCURRENT_REQUESTS = config.get("concurrent_requests", 10)
+
+
+async def worker(queue, fetcher, extractor, saver, discover, semaphore):
+    while True:
+        item = await queue.get_url()
+        priority, url, meta = item
+        if url is None:
+            queue.task_done()
+            break  # 退出循环
+        try:
+            async with semaphore:
+                html = await fetcher.fetch(url)
+            data = extractor.extract(html, url)
+            await saver.save(data, url)
+            links = discover.extract_links(html, url)
+            for link in links:
+                await queue.add_url(link)
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
+        finally:
+            queue.task_done()
+
+
+async def main():
+    queue = QueueManager()
+    extractor = DataExtractor()
+    saver = DataSaver()
+    discover = LinkDiscover()
+    await queue.async_init()
+
+    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+
+    async with AsyncFetcher() as fetcher:
+        tasks = [asyncio.create_task(worker(queue, fetcher, extractor, saver, discover, semaphore)) for _ in range(CONCURRENT_REQUESTS)]
+
+        # 等待所有URL任务完成
+        await queue.join()
+
+        # 添加哨兵值通知 worker 退出
+        for _ in range(CONCURRENT_REQUESTS):
+            await queue.add_url(None)  # 哨兵
+
+        # 等待所有 worker 退出
+        await asyncio.gather(*tasks)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+=== C:\Users\wyg\Desktop\crawler\core\discover.py ===
+
+import re
+import logging
+from typing import List, Optional
+from urllib.parse import urljoin, urlparse
+from lxml import html as lxml_html
+from utils.config import load_config
+
+# 初始化 logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(name)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
+class LinkDiscover:
+    def __init__(self, config: Optional[dict] = None):
+        self.config = load_config()
+        self.selector = "a[href]"
+        self.allowed_domains = self.config.get("allowed_domains", [])
+        self.exclude_patterns = [re.compile(p) for p in self.config.get("exclude_patterns", [])]
+
+        logger.info("LinkDiscover 初始化完成。")
+        logger.debug(f"使用选择器: {self.selector}，允许域名: {self.allowed_domains}，排除模式: {[p.pattern for p in self.exclude_patterns]}")
+
+    def extract_links(self, page_html: str, base_url: str) -> List[str]:
+        """
+        提取页面中的所有符合规则的链接，补全相对 URL
+        """
+        try:
+            tree = lxml_html.fromstring(page_html)
+            tree.make_links_absolute(base_url)
+        except Exception as e:
+            logger.error(f"[HTML解析失败] base_url: {base_url}，错误: {str(e)}")
+            return []
+
+        links = []
+        elements = tree.cssselect(self.selector)
+        logger.debug(f"选择器匹配元素数: {len(elements)}")
+
+        for el in elements:
+            href = el.get("href")
+            if not href:
+                continue
+            href = href.strip()
+            if self._is_valid(href):
+                links.append(href)
+            else:
+                logger.debug(f"被过滤链接: {href}")
+
+        logger.info(f"从 {base_url} 提取到有效链接数: {len(links)}")
+        return links
+
+    def _is_valid(self, url: str) -> bool:
+        if url.startswith(("javascript:", "mailto:", "tel:", "#")):
+            return False
+
+        if self.allowed_domains:
+            domain = urlparse(url).netloc
+            if domain not in self.allowed_domains:
+                return False
+
+        for pattern in self.exclude_patterns:
+            if pattern.search(url):
+                return False
+
+        return True
+
+=== C:\Users\wyg\Desktop\crawler\core\extractor.py ===
+
+import re
+import logging
+from typing import Dict, Optional, List, Any
+from lxml import html as lxml_html
+from lxml.etree import XMLSyntaxError
+from utils.config import load_config
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # 可调整为 DEBUG 以查看更详细信息
+
+# 控制台输出格式
+console_handler = logging.StreamHandler()
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(name)s - %(message)s')
+console_handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(console_handler)
+
+
+class DataExtractor:
+    def __init__(self, config: Optional[Dict] = load_config()):
+        """
+        config 示例格式:
+        {
+            "data_extraction": [
+                {"title": "css:h1.article-title"},
+                {"date": "xpath://div[@class='date']/text()"},
+                {"content": "css:div.article-body"},
+                {"emails": "re:\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"}
+            ]
+        }
+        """
+        extraction = config.get("data_extraction", []) if config else []
+        self.rules = self._normalize_rules(extraction)
+        logger.info("DataExtractor 初始化完成，提取规则: %s", self.rules)
+
+    def _normalize_rules(self, extraction: Any) -> Dict[str, str]:
+        """
+        统一规则格式为一个字典 {field: rule}
+        """
+        if isinstance(extraction, dict):
+            return extraction
+        elif isinstance(extraction, list):
+            combined_rules = {}
+            for item in extraction:
+                if isinstance(item, dict):
+                    combined_rules.update(item)
+            return combined_rules
+        return {}
+
+    def _parse_html(self, page_html: str, url: str):
+        """
+        将HTML解析为DOM树，并处理异常
+        """
+        try:
+            tree = lxml_html.fromstring(page_html)
+            tree.make_links_absolute(url)
+            logger.debug("HTML 解析成功: %s", url)
+            return tree
+        except XMLSyntaxError as e:
+            logger.error("[HTML解析失败] URL: %s，错误信息: %s", url, str(e))
+            return None
+
+    def _extract_by_rule(self, tree, page_html: str, rule: str) -> List[str]:
+        """
+        根据规则提取字段值
+        """
+        values = []
+        logger.debug("执行提取规则: %s", rule)
+
+        if rule.startswith("css:"):
+            selector = rule[4:]
+            elements = tree.cssselect(selector)
+            values = [el.text_content().strip() for el in elements if el.text_content().strip()]
+            logger.debug("CSS提取 [%s]: %d 条结果", selector, len(values))
+
+        elif rule.startswith("xpath:"):
+            xpath_expr = rule[6:]
+            elements = tree.xpath(xpath_expr)
+            for el in elements:
+                val = el.strip() if isinstance(el, str) else el.text_content().strip()
+                if val:
+                    values.append(val)
+            logger.debug("XPath提取 [%s]: %d 条结果", xpath_expr, len(values))
+
+        elif rule.startswith("re:"):
+            pattern = rule[3:]
+            try:
+                matches = re.findall(pattern, page_html)
+                values = [m.strip() for m in matches if m.strip()]
+                logger.debug("正则提取 [%s]: %d 条结果", pattern, len(values))
+            except re.error as e:
+                logger.warning("[正则表达式错误] pattern: %s，错误信息: %s", pattern, str(e))
+
+        else:
+            logger.warning("[未知规则] rule: %s", rule)
+
+        return values
+
+    def extract(self, page_html: str, url: str) -> Dict[str, List[str]]:
+        """
+        提取页面数据
+        """
+        logger.info("开始提取 URL: %s", url)
+        tree = self._parse_html(page_html, url)
+        if not tree:
+            logger.warning("提取失败：HTML树构建失败")
+            return {}
+
+        result: Dict[str, List[str]] = {}
+
+        for field, rule in self.rules.items():
+            values = self._extract_by_rule(tree, page_html, rule)
+            result[field] = values
+            logger.debug("字段 [%s] 提取结果: %s", field, values)
+
+        result["url"] = [url]  # 保留来源网址
+        logger.info("提取完成: %s", url)
+        return result
+
+=== C:\Users\wyg\Desktop\crawler\core\fetcher.py ===
+
+import aiohttp
+import asyncio
+import logging
+from typing import Optional
+from utils.config import load_config
+
+class AsyncFetcher:
+    DEFAULT_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (compatible; aiohttp-crawler/1.0; +https://yourdomain.com/bot)"
+    }
+
+    def __init__(self, headers: Optional[dict] = None):
+        self.headers = headers or self.DEFAULT_HEADERS
+        self.config = load_config()
+        self.timeout = self.config.get("timeout", 10)
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.logger = logging.getLogger(__name__)
+        self._setup_logger()
+
+    def _setup_logger(self):
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '[%(asctime)s] %(levelname)s - %(name)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
+
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(headers=self.headers)
+        self.logger.debug("AsyncFetcher: 创建新的 ClientSession")
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.session:
+            await self.session.close()
+            self.logger.debug("AsyncFetcher: 关闭 ClientSession")
+            self.session = None
+
+    async def fetch(self, url: str) -> str:
+        """
+        异步请求网页，返回文本内容
+
+        参数:
+          - url: 目标URL
+
+        返回:
+          - str: 响应文本内容
+
+        抛出:
+          - aiohttp.ClientError或asyncio.TimeoutError等异常
+        """
+        if self.session is None:
+            self.session = aiohttp.ClientSession(headers=self.headers)
+            auto_close = True
+            self.logger.debug("fetch: 创建临时 ClientSession")
+        else:
+            auto_close = False
+
+        try:
+            self.logger.info(f"开始请求: {url}")
+            async with self.session.get(url, timeout=self.timeout) as response:
+                response.raise_for_status()
+                text = await response.text()
+                self.logger.info(f"请求成功: {url} [状态码: {response.status}]")
+                return text
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            self.logger.error(f"请求失败: {url} - 错误: {e}")
+            raise
+        finally:
+            if auto_close and self.session:
+                await self.session.close()
+                self.logger.debug("fetch: 关闭临时 ClientSession")
+                self.session = None
+
+=== C:\Users\wyg\Desktop\crawler\core\queue.py ===
+
+import asyncio
+import logging
+import re
+from typing import Tuple, Optional
+
+from urllib.parse import urldefrag
+from utils.config import load_config
+
+
+class Deduplicator:
+    def __init__(self):
+        self.visited = set()
+        self.config = load_config()
+
+    def normalize(self, url: str) -> str:
+        """
+        去除 fragment，标准化 URL
+        """
+        clean_url, _ = urldefrag(url)
+        return clean_url
+
+    def is_seen(self, url: str) -> bool:
+        url = self.normalize(url)
+        if self.config.get("url_disallow_patterns", []):
+            for pattern in self.config["url_disallow_patterns"]:
+                if re.search(pattern, url):
+                    return True
+        return url in self.visited
+
+    def mark_seen(self, url: str):
+        url = self.normalize(url)
+        self.visited.add(url)
+
+
+# 设置 logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(name)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
+class QueueManager:
+    def __init__(self, config: dict = load_config()):
+        self.queue = asyncio.PriorityQueue()
+        self.seen = Deduplicator()
+        self.config = config or {}
+        self.start_urls  = self.config.get("start_urls", [])
+        logger.debug("QueueManager 初始化完成。")
+
+    async def task_done(self):
+        self.queue.task_done()
+        logger.debug("任务完成。")
+
+    async def join(self):
+        await self.queue.join()
+    
+    async def async_init(self, initial_urls: list[str] = None):
+        if  initial_urls is None:
+            initial_urls = self.start_urls
+        for url in initial_urls:
+            await self.add_url(url)
+        logger.info("初始 URL 添加完成。")
+
+    def _get_url_priority(self, url: str) -> int:
+        """
+        匹配规则并返回优先级，默认 0，优先级数值越小越优先
+        """
+        rules = self.config.get("priority_rules", [])
+        for rule in rules:
+            pattern = rule.get("pattern")
+            priority = rule.get("priority", 0)
+            if pattern and re.search(pattern, url):
+                logger.debug(f"URL 匹配规则: {pattern}，设定优先级: {priority}")
+                return -priority  # PriorityQueue 越小越优先
+        return 0
+
+    async def add_url(self, url: str, meta: Optional[dict] = None):
+        """
+        添加 URL 到队列中，带优先级和去重
+        """
+        if url==None:
+            await self.queue.put((-10, None, meta or {}))
+            return
+        if self.seen.is_seen(url):
+            logger.debug(f"已跳过重复 URL: {url}")
+            return
+
+        priority = self._get_url_priority(url)
+        await self.queue.put((priority, url, meta or {}))
+        self.seen.mark_seen(url)
+        logger.info(f"添加 URL: {url}，优先级: {priority}")
+
+    async def get_url(self) -> Tuple[int, str, dict]:
+        """
+        获取下一个待处理的 URL
+        """
+        item = await self.queue.get()
+        logger.debug(f"获取 URL: {item[1]}，优先级: {item[0]}")
+        return item
+
+    def is_empty(self) -> bool:
+        """
+        检查队列是否为空
+        """
+        empty = self.queue.empty()
+        logger.debug(f"队列是否为空: {empty}")
+        return empty
+
+    def task_done(self):
+        """
+        当前任务处理完成
+        """
+        self.queue.task_done()
+        logger.debug("标记当前任务已完成。")
+
+=== C:\Users\wyg\Desktop\crawler\core\saver.py ===
+
+import json
+import os
+import logging
+from typing import Dict, Optional, Union
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # 根据需要改为 DEBUG
+
+# 控制台输出格式
+console_handler = logging.StreamHandler()
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(name)s - %(message)s')
+console_handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(console_handler)
+
+
+class DataSaver:
+    def __init__(self, config: Optional[Dict] = None):
+        """
+        config 示例：
+        {
+            "save_dir": "data",
+            "save_as": "json",  # 支持 "json" 或 "txt"
+            "file_prefix": "result"  # 文件名前缀
+        }
+        """
+        self.config = config or {}
+        self.save_dir = self.config.get("save_dir", "data")
+        self.save_as = self.config.get("save_as", "json")
+        self.file_prefix = self.config.get("file_prefix", "result")
+
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
+            logger.info("创建保存目录: %s", self.save_dir)
+
+        self._file_index = 0  # 用于 JSON 文件命名
+        logger.info("DataSaver 初始化完成。保存格式: %s，目录: %s", self.save_as, self.save_dir)
+
+    async def save(self, data: Union[Dict, str], url: Optional[str] = None):
+        """
+        保存数据到文件。
+        - JSON 模式：每条数据一个文件。
+        - TXT 模式：所有数据追加保存到一个文件中。
+        """
+        try:
+            if self.save_as == "json":
+                await self._save_json(data, url)
+            elif self.save_as == "txt":
+                await self._save_txt(data, url)
+            else:
+                logger.error("不支持的保存格式: %s", self.save_as)
+                raise NotImplementedError(f"Save format '{self.save_as}' not implemented yet.")
+        except Exception as e:
+            logger.exception("保存数据时出错: %s", str(e))
+
+    async def _save_json(self, data: Dict, url: Optional[str] = None):
+        filename = f"{self.file_prefix}_{self._file_index}.json"
+        self._file_index += 1
+
+        filepath = os.path.join(self.save_dir, filename)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info("数据已保存为 JSON: %s", filepath)
+        except Exception as e:
+            logger.error("保存 JSON 文件失败: %s，错误: %s", filepath, str(e))
+            raise
+
+    async def _save_txt(self, data: Union[Dict, str], url: Optional[str] = None):
+        filename = f"{self.file_prefix}.txt"
+        filepath = os.path.join(self.save_dir, filename)
+
+        if isinstance(data, dict):
+            data_str = json.dumps(data, ensure_ascii=False, indent=2)
+        else:
+            data_str = str(data)
+
+        try:
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(data_str + "\n\n")
+            logger.info("数据已追加保存为 TXT: %s", filepath)
+        except Exception as e:
+            logger.error("保存 TXT 文件失败: %s，错误: %s", filepath, str(e))
+            raise
+
+=== C:\Users\wyg\Desktop\crawler\utils\config.py ===
+
+# utils/config.py
+import yaml
+import os
+
+_config_cache = None
+
+def load_config(config_path="config.yaml"):
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"配置文件不存在: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        try:
+            _config_cache = yaml.safe_load(f)
+            return _config_cache
+        except yaml.YAMLError as e:
+            raise ValueError(f"配置文件格式错误: {e}")

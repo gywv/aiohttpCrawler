@@ -6,17 +6,17 @@ from core.discover import LinkDiscover
 from core.saver import DataSaver
 from utils.config import load_config
 
-cofig = load_config()
-CONCURRENT_REQUESTS = cofig.get("concurrent_requests", 10)
+config = load_config()
+CONCURRENT_REQUESTS = config.get("concurrent_requests", 10)
 
 
 async def worker(queue, fetcher, extractor, saver, discover, semaphore):
     while True:
-        try:
-            priority, url, meta = await queue.get_url()
-        except asyncio.QueueEmpty:
-            break
-
+        item = await queue.get_url()
+        priority, url, meta = item
+        if url is None:
+            # queue.task_done()
+            break  # 退出循环
         try:
             async with semaphore:
                 html = await fetcher.fetch(url)
@@ -30,6 +30,7 @@ async def worker(queue, fetcher, extractor, saver, discover, semaphore):
         finally:
             queue.task_done()
 
+
 async def main():
     queue = QueueManager()
     extractor = DataExtractor()
@@ -40,8 +41,18 @@ async def main():
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
     async with AsyncFetcher() as fetcher:
-        tasks = [worker(queue, fetcher, extractor, saver, discover, semaphore) for _ in range(CONCURRENT_REQUESTS)]
+        tasks = [asyncio.create_task(worker(queue, fetcher, extractor, saver, discover, semaphore)) for _ in range(CONCURRENT_REQUESTS)]
+
+        # 等待所有URL任务完成
+        await queue.join()
+
+        # 添加哨兵值通知 worker 退出
+        for _ in range(CONCURRENT_REQUESTS):
+            await queue.add_url(None)  # 哨兵
+
+        # 等待所有 worker 退出
         await asyncio.gather(*tasks)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
