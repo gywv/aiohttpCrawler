@@ -1,30 +1,30 @@
 # 开始URL列表
 start_urls:
-  - "https://blog.bling.moe/"
-
-# 优先级规则，优先抓取匹配的URL，避免浪费时间在无关页面
-priority_rules:
-  - pattern: ".*post.*"
-    priority: 10
-  # - pattern: ".*page.*"
-  #   priority: 5
-
-# 数据提取规则，使用CSS选择器或XPath表达式
-data_extraction:
-  title: "css:title"
-  published_date: "css:time.post-date"
-  modified_date: "css:span.post-moddate"
-  author: "css:span.post-author"
+  - "https://fuliji666.cc/zyfl/flj/page/30"
 
 # 域名白名单，避免抓取无关页面
 allowed_domains:
-  - "blog.bling.moe"
+  - "fuliji666.cc"  
 
-# 默认日志在log/crwal.log
-save_dir: "data"
+# 优先级规则，优先抓取匹配的URL，避免浪费时间在无关页面
+priority_rules:
+  # - pattern: ".*post.*"
+  #   priority: 10
+  - pattern: ".*page.*"
+    priority: 5
 
+# 数据提取规则，使用CSS选择器或XPath表达式或正则表达式
+data_extraction:
+  - imgs: 're:wp-content.*?jpg'
+
+
+# 追加保存为一个txt文件
+# save_as: "txt"
 # 每条数据保存为一个json文件
 save_as: "json"
+
+# 数据保存目录
+save_dir: "data"
 
 # 日志级别，DEBUG, INFO, WARNING, ERROR
 log_level: "INFO"
@@ -32,12 +32,12 @@ log_level: "INFO"
 # 单次请求超时时间（秒）
 fetch_timeout: 10
 
-# 排除文件类型
+# 排除链接模式(链接发现过程中)
 exclude_patterns:
-  - ".*\\.(xml|json)$"
-  - ".*\\.(jpe?g|png|gif|bmp|svg|ico|webp)$"
-  - ".*\\.(pdf|docx?|xlsx?|pptx?)$"
-  - ".*\\.(zip|rar|7z|tar|gz)$"
-  - ".*\\.(mp3|wav|ogg|mp4|avi|mov|mkv)$"
-  - ".*\\.(exe|dmg|apk|iso)$"
+  - '.*\.(xml|json)$'
+  - '.*\.(jpe?g|png|gif|bmp|svg|ico|webp)$'
+  - '.*\.(pdf|docx?|xlsx?|pptx?)$'
+  - '.*\.(zip|rar|7z|tar|gz)$'
+  - '.*\.(mp3|wav|ogg|mp4|avi|mov|mkv)$'
+  - '.*\.(exe|dmg|apk|iso)$'
 
